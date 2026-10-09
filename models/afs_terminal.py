@@ -30,6 +30,7 @@ ADMIN_ONLY_FIELDS = {'secure_key_param', 'endpoint_url'}
 # Sale/Void calls that hold a terminal: anything started within this window
 # past the terminal's own timeout, and not yet finished, counts as in flight.
 BUSY_GRACE_SECONDS = 120
+DEFAULT_TIMEOUT = 180
 
 
 def check_afs_manager(env):
@@ -109,7 +110,7 @@ class AfsTerminal(models.Model):
     ], string='Print Receipt Note', default='0', required=True)
 
     timeout = fields.Integer(
-        default=180,
+        default=DEFAULT_TIMEOUT,
         help='Seconds to wait for the terminal to answer. Note: the AFS endpoint sits behind '
              'Cloudflare, which drops any request still open after 100 seconds (HTTP 524) — '
              'the operator and cardholder must finish on the terminal well within that, '
@@ -215,14 +216,17 @@ class AfsTerminal(models.Model):
                 host=host, suffix=DEFAULT_ALLOWED_HOST_SUFFIX, param=ALLOWED_HOSTS_PARAM,
             ))
 
-    def _get_secure_key(self):
-        self.ensure_one()
-        # Re-checked at use time too: records saved before the constraint
-        # existed are never revalidated by Odoo on their own.
+    def _revalidate(self, validate, value):
+        """Re-run a field constraint at use time — records saved before the
+        constraint existed are never revalidated by Odoo on their own."""
         try:
-            self._validate_secure_key_param(self.secure_key_param)
+            validate(value)
         except ValidationError as exc:
             raise UserError(_('Terminal "%(name)s": %(error)s', name=self.name, error=exc.args[0]))
+
+    def _get_secure_key(self):
+        self.ensure_one()
+        self._revalidate(self._validate_secure_key_param, self.secure_key_param)
         key = self.env['ir.config_parameter'].sudo().get_param(self.secure_key_param)
         if not key:
             raise UserError(_(
@@ -256,11 +260,8 @@ class AfsTerminal(models.Model):
 
     def _get_client(self):
         self.ensure_one()
-        try:
-            self._validate_endpoint_url(self.endpoint_url)
-        except ValidationError as exc:
-            raise UserError(_('Terminal "%(name)s": %(error)s', name=self.name, error=exc.args[0]))
-        return afs_client.AfsClient(endpoint_url=self.endpoint_url, timeout=self.timeout or 180)
+        self._revalidate(self._validate_endpoint_url, self.endpoint_url)
+        return afs_client.AfsClient(endpoint_url=self.endpoint_url, timeout=self.timeout or DEFAULT_TIMEOUT)
 
     # ------------------------------------------------------------------
     # Response handling
@@ -302,13 +303,20 @@ class AfsTerminal(models.Model):
         every worker sees it, and a worker that dies mid-call frees the
         terminal on its own once the window passes."""
         self.ensure_one()
-        since = fields.Datetime.now() - timedelta(seconds=(self.timeout or 180) + BUSY_GRACE_SECONDS)
+        since = fields.Datetime.now() - timedelta(seconds=self._in_flight_window())
         return bool(self.env['afs.transaction'].sudo().search_count([
             ('terminal_id', 'in', self._same_device().ids),
             ('operation', 'in', ('sale', 'void')),
             ('finished_at', '=', False),
             ('started_at', '>=', since),
         ]))
+
+    def _in_flight_window(self):
+        """Seconds a started Sale/Void can stay unfinished before it is
+        presumed dead (worker crash): the terminal timeout plus a grace.
+        Shared by the busy check and the stale-pending cron."""
+        self.ensure_one()
+        return (self.timeout or DEFAULT_TIMEOUT) + BUSY_GRACE_SECONDS
 
     def _same_device(self):
         """All terminal records driving the same physical device (same TID),
@@ -375,12 +383,12 @@ class AfsTerminal(models.Model):
         client = self._get_client()
         config = self._get_config()
         try:
-            _envelope, response_xml, _result = client.cancel(config)
-            result = self._parse_response(response_xml)
+            result = self._parse_response(
+                client.post('RequestCancellation', afs_client.build_cancellation_envelope(config)))
         except Exception as exc:  # noqa: BLE001 - surface any transport/parse error to the user
             raise UserError(_('Connection test failed: %s') % exc)
 
-        ok = result.web_response_status.strip().lower().startswith('success')
+        ok = afs_client.is_web_success(result.web_response_status)
         message = (
             _('Connection OK — credentials accepted.')
             if ok else
@@ -424,23 +432,13 @@ class AfsTerminal(models.Model):
 
         result = self._parse_response(response_xml)
         state = afs_client.classify(result)
-        web_ok = result.web_response_status.strip().lower().startswith('success')
-        if state == 'unknown' and web_ok and not result.pos_resp_code:
+        if state == 'unknown' and afs_client.is_web_success(result.web_response_status) and not result.pos_resp_code:
             # Spec §4: the documented Settlement response is just
             # WebResponseStatus=Success — that IS the approval.
             state = 'approved'
 
-        transaction = self._record_settlement({
-            'state': state,
-            'request_xml': request_xml,
-            'response_xml': result.response_xml,
-            'web_response_status': result.web_response_status,
-            'pos_resp_code': result.pos_resp_code,
-            'pos_resp_text': result.pos_resp_text,
-            'pos_resp_status': result.pos_resp_status,
-            'pos_batch_number': result.pos_batch_number,
-            'pos_datetime': result.pos_datetime,
-        })
+        transaction = self._record_settlement(dict(
+            self.env['afs.transaction']._result_to_vals(result), state=state, request_xml=request_xml))
         # The Settlement response has no PosBatchNumber field per the AFS spec
         # (§8.9) — record the date from the settlement actually being
         # approved, not from a field AFS never sends. Capture a batch number

@@ -572,7 +572,7 @@ class TestAfsInvoiceFlow(TransactionCase):
         self.env.invalidate_all()
         self.assertEqual(captured['operation'], 'Void')
         self.assertIn('<dc:OrigInvoiceNumber>000006</dc:OrigInvoiceNumber>', captured['envelope'])
-        # Invoice number only — like the working Postman call / VoidByInvoice.
+        # Original terminal invoice number only (spec §3.2 / VoidByInvoice).
         self.assertIn('<dc:OrigAuthCode></dc:OrigAuthCode>', captured['envelope'])
         self.assertIn('<dc:OrigRrn></dc:OrigRrn>', captured['envelope'])
         self.assertNotIn(sale_txn.our_reference, captured['envelope'])

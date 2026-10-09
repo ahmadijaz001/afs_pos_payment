@@ -4,6 +4,20 @@ from odoo.exceptions import UserError
 
 from .afs_terminal import check_afs_manager, check_afs_user
 from .afs_transaction import schedule_void_after_commit
+from .res_config_settings import AUTO_VOID_PARAM
+
+# Card status of the invoice from its latest Sale attempt's state; an approved
+# Sale is refined further (paid / reversing / reversed) in _compute_afs_state.
+# 'cancelled' and 'error' mean the card was provably never charged ('error'
+# only when the request never reached the card, or a manager resolved it
+# "not processed" — real uncertainty is 'unknown').
+AFS_STATE_FROM_SALE = {
+    'pending': 'pending',
+    'declined': 'declined',
+    'unknown': 'unknown',
+    'cancelled': 'none',
+    'error': 'none',
+}
 
 
 class AccountMove(models.Model):
@@ -83,36 +97,18 @@ class AccountMove(models.Model):
             # A late, non-approved response recorded against an earlier attempt
             # (reverses_id set) is not a new attempt: no money moved, so it must
             # not decide the invoice's status.
-            sales = move.afs_transaction_ids.filtered(
+            latest = move._afs_latest_first(
                 lambda t: t.operation == 'sale' and not (t.reverses_id and t.state != 'approved')
-            ).sorted(key=lambda t: t.create_date or fields.Datetime.now(), reverse=True)
-            if not sales:
-                move.afs_state = 'none'
-                continue
-            latest = sales[0]
-            if latest.state == 'pending':
-                move.afs_state = 'pending'
-            elif latest.state == 'declined':
-                move.afs_state = 'declined'
-            elif latest.state == 'cancelled':
-                move.afs_state = 'none'
-            elif latest.state == 'unknown':
-                move.afs_state = 'unknown'
-            elif latest.state == 'error':
-                # A Sale only ends in 'error' when it provably never reached
-                # the card (request refused before the terminal, or resolved
-                # "not processed" by a manager) — real uncertainty is 'unknown'.
-                move.afs_state = 'none'
-            elif latest.state == 'approved':
-                if latest.reversed_by_id:
-                    move.afs_state = 'reversed'
-                elif move.afs_transaction_ids.filtered(
-                        lambda t: t.operation == 'void' and t.reverses_id == latest and t.state == 'pending'):
-                    move.afs_state = 'reversing'
-                else:
-                    move.afs_state = 'paid'
+            )[:1]
+            if latest.state != 'approved':
+                move.afs_state = AFS_STATE_FROM_SALE.get(latest.state, 'none')
+            elif latest.reversed_by_id:
+                move.afs_state = 'reversed'
+            elif move.afs_transaction_ids.filtered(
+                    lambda t: t.operation == 'void' and t.reverses_id == latest and t.state == 'pending'):
+                move.afs_state = 'reversing'
             else:
-                move.afs_state = 'none'
+                move.afs_state = 'paid'
 
     @api.depends(
         'afs_transaction_ids.state', 'afs_transaction_ids.operation',
@@ -143,10 +139,7 @@ class AccountMove(models.Model):
             ('afs_receipt', 'pos_receipt'),
         ]
         for move in self:
-            sales = move.afs_transaction_ids.filtered(
-                lambda t: t.operation == 'sale' and t.state == 'approved'
-            ).sorted(key=lambda t: t.create_date or fields.Datetime.now(), reverse=True)
-            latest = sales[:1]
+            latest = move._afs_latest_first(lambda t: t.operation == 'sale' and t.state == 'approved')[:1]
             if latest:
                 for move_field, txn_field in snapshot_fields:
                     move[move_field] = latest[txn_field]
@@ -157,6 +150,16 @@ class AccountMove(models.Model):
                     move[move_field] = False
                 move.afs_terminal_tid = False
                 move.afs_terminal_mid = False
+
+    def _afs_latest_first(self, predicate):
+        """This invoice's AFS transactions matching `predicate`, newest first."""
+        self.ensure_one()
+        return self.afs_transaction_ids.filtered(predicate).sorted(key=lambda t: t.create_date or fields.Datetime.now(), reverse=True)
+
+    def _afs_reversible_sales(self):
+        """Approved card payments of this invoice not yet reversed, newest first."""
+        return self._afs_latest_first(
+            lambda t: t.operation == 'sale' and t.state == 'approved' and not t.reversed_by_id)
 
     def action_afs_pay(self):
         self.ensure_one()
@@ -199,12 +202,9 @@ class AccountMove(models.Model):
         cleans up our own side but may not stop the physical device."""
         self.ensure_one()
         check_afs_user(self.env)
-        pending = self.afs_transaction_ids.filtered(
-            lambda t: t.operation in ('sale', 'void') and t.state == 'pending'
-        ).sorted(key=lambda t: t.create_date or fields.Datetime.now(), reverse=True)
-        if not pending:
-            return
-        pending[0].action_request_cancellation()
+        pending = self._afs_latest_first(lambda t: t.operation in ('sale', 'void') and t.state == 'pending')
+        if pending:
+            pending[0].action_request_cancellation()
 
     def action_afs_reverse(self):
         """Reversing a card payment goes through a Credit Note, not a direct
@@ -216,9 +216,7 @@ class AccountMove(models.Model):
         This button disappears once afs_state is 'reversed' (view domain)."""
         self.ensure_one()
         check_afs_manager(self.env)
-        sales = self.afs_transaction_ids.filtered(
-            lambda t: t.operation == 'sale' and t.state == 'approved' and not t.reversed_by_id
-        )
+        sales = self._afs_reversible_sales()
         if not sales:
             raise UserError(_('No approved card payment on this invoice to reverse.'))
         for sale in sales.sudo():
@@ -259,15 +257,12 @@ class AccountMove(models.Model):
         the posting has committed (see schedule_void_after_commit).
         The settings toggle stays as a global kill switch."""
         self.ensure_one()
-        enabled = self.env['ir.config_parameter'].sudo().get_param(
-            'afs_pos_integration.auto_void_on_credit_note', 'true')
+        enabled = self.env['ir.config_parameter'].sudo().get_param(AUTO_VOID_PARAM, 'true')
         if enabled != 'true':
             return
         check_afs_manager(self.env)
         original = self.reversed_entry_id
-        sales = original.sudo().afs_transaction_ids.filtered(
-            lambda t: t.operation == 'sale' and t.state == 'approved' and not t.reversed_by_id
-        ).sorted(key=lambda t: t.create_date or fields.Datetime.now(), reverse=True)
+        sales = original.sudo()._afs_reversible_sales()
         if not sales:
             raise UserError(_(
                 'This credit note is set to void a card payment, but invoice %s has no '

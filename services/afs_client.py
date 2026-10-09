@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from xml.etree import ElementTree as ET
@@ -185,8 +185,12 @@ class AfsResult:
     pos_datetime: datetime | None = None
     pos_txn_name: str = ""
     pos_receipt: str = ""
-    raw_fields: dict = field(default_factory=dict)
     response_xml: str = ""
+
+
+def is_web_success(web_response_status: str) -> bool:
+    """WebResponseStatus says the web call itself succeeded ("Success"; failures are "Faild")."""
+    return (web_response_status or "").strip().lower().startswith("success")
 
 
 def _local_name(tag: str) -> str:
@@ -244,7 +248,7 @@ def parse_response(xml_text: str) -> AfsResult:
     # and PosRespStatus (spec: -1 unknown / 0 declined / 1 approved). Accept either,
     # gated by the web call itself having succeeded — some responses populate one
     # but not the other.
-    approved = web_status.strip().lower().startswith("success") and (
+    approved = is_web_success(web_status) and (
         resp_code.strip() in ("00", "000") or resp_status.strip() == "1"
     )
     web_error = fields.get("WebResponseErrorDesc", "")
@@ -254,7 +258,7 @@ def parse_response(xml_text: str) -> AfsResult:
         approved=approved,
         cancelled=cancelled,
         web_response_status=web_status,
-        web_response_error=fields.get("WebResponseErrorDesc", ""),
+        web_response_error=web_error,
         pos_resp_code=resp_code,
         pos_resp_text=fields.get("PosRespText", ""),
         pos_resp_status=resp_status,
@@ -277,7 +281,6 @@ def parse_response(xml_text: str) -> AfsResult:
         pos_datetime=_parse_datetime(fields.get("PosDate"), fields.get("PosTime")),
         pos_txn_name=fields.get("PosTxnName", ""),
         pos_receipt=fields.get("PosReceipt", ""),
-        raw_fields=fields,
         response_xml=xml_text,
     )
 
@@ -324,11 +327,6 @@ def build_void_envelope(config: AfsConfig, orig_auth_code: str, orig_invoice_num
     return _envelope("Void", _orig_ref_body(config, orig_auth_code, orig_invoice_number, orig_rrn, printer))
 
 
-def build_enquiry_envelope(config: AfsConfig, orig_auth_code: str = "", orig_invoice_number: str = "", orig_rrn: str = "", printer: AfsPrinter | None = None) -> str:
-    printer = printer or AfsPrinter(invoice_number="", reference_number="")
-    return _envelope("Enquiry", _orig_ref_body(config, orig_auth_code, orig_invoice_number, orig_rrn, printer))
-
-
 def build_enquiry_by_ref_envelope(config: AfsConfig, orig_auth_code: str, orig_invoice_number: str, orig_rrn: str, printer: AfsPrinter) -> str:
     return _envelope("EnquiryByRef", _orig_ref_body(config, orig_auth_code, orig_invoice_number, orig_rrn, printer))
 
@@ -351,14 +349,13 @@ def classify(result: AfsResult) -> str:
         return "approved"
     if result.cancelled:
         return "cancelled"
-    web_ok = result.web_response_status.strip().lower().startswith("success")
-    if web_ok and result.pos_resp_status.strip() == "0" and result.pos_resp_code.strip():
+    if is_web_success(result.web_response_status) and result.pos_resp_status.strip() == "0" and result.pos_resp_code.strip():
         return "declined"
     return "unknown"
 
 
 def correlate_recovery(result: AfsResult, expected_amount: Decimal, sale_started_at: datetime, skew_seconds: int = 60) -> bool:
-    """After a dropped Sale connection: trust a no-reference Enquiry only if amount AND timestamp both match; else unknown.
+    """After a dropped Sale connection: trust an approval found by EnquiryByRef only if amount AND timestamp both match; else unknown.
 
     ``result.pos_datetime`` and ``sale_started_at`` must be in the same
     timezone — the Odoo layer converts the terminal's local time to UTC first
@@ -378,8 +375,8 @@ class AfsClient:
         self.timeout = timeout
 
     def post(self, operation: str, envelope: str) -> str:
-        # Public (not the sale/void/... helpers below) so a caller can build the envelope,
-        # commit it to the DB, and only then make the (up to 180s) blocking call.
+        # Callers build the envelope with build_*_envelope() first, so it can be
+        # committed to the DB before the (up to the terminal timeout) blocking call.
         headers = {
             "Content-Type": "text/xml; charset=utf-8",
             "SOAPAction": f"{SOAP_ACTION_BASE}{operation}",
@@ -392,33 +389,3 @@ class AfsClient:
             raise AfsError(f"AFS endpoint answered with a redirect (HTTP {resp.status_code}); refusing to follow it.")
         resp.raise_for_status()
         return resp.text
-
-    def sale(self, config: AfsConfig, amount: Decimal, printer: AfsPrinter):
-        envelope = build_sale_envelope(config, amount, printer)
-        response_xml = self.post("Sale", envelope)
-        return envelope, response_xml, parse_response(response_xml)
-
-    def void(self, config: AfsConfig, orig_auth_code: str, orig_invoice_number: str, orig_rrn: str, printer: AfsPrinter):
-        envelope = build_void_envelope(config, orig_auth_code, orig_invoice_number, orig_rrn, printer)
-        response_xml = self.post("Void", envelope)
-        return envelope, response_xml, parse_response(response_xml)
-
-    def enquiry(self, config: AfsConfig, printer: AfsPrinter | None = None):
-        envelope = build_enquiry_envelope(config, printer=printer)
-        response_xml = self.post("Enquiry", envelope)
-        return envelope, response_xml, parse_response(response_xml)
-
-    def enquiry_by_ref(self, config: AfsConfig, orig_auth_code: str, orig_invoice_number: str, orig_rrn: str, printer: AfsPrinter):
-        envelope = build_enquiry_by_ref_envelope(config, orig_auth_code, orig_invoice_number, orig_rrn, printer)
-        response_xml = self.post("EnquiryByRef", envelope)
-        return envelope, response_xml, parse_response(response_xml)
-
-    def settlement(self, config: AfsConfig):
-        envelope = build_settlement_envelope(config)
-        response_xml = self.post("Settlement", envelope)
-        return envelope, response_xml, parse_response(response_xml)
-
-    def cancel(self, config: AfsConfig):
-        envelope = build_cancellation_envelope(config)
-        response_xml = self.post("RequestCancellation", envelope)
-        return envelope, response_xml, parse_response(response_xml)

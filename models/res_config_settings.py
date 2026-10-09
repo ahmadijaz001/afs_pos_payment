@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from odoo import api, fields, models
 
+AUTO_VOID_PARAM = 'afs_pos_integration.auto_void_on_credit_note'
+
 
 class ResConfigSettings(models.TransientModel):
     _inherit = 'res.config.settings'
@@ -29,16 +31,14 @@ class ResConfigSettings(models.TransientModel):
     )
 
     def _compute_afs_auto_void_on_credit_note(self):
-        value = self.env['ir.config_parameter'].sudo().get_param(
-            'afs_pos_integration.auto_void_on_credit_note', 'true')
+        value = self.env['ir.config_parameter'].sudo().get_param(AUTO_VOID_PARAM, 'true')
         for rec in self:
             rec.afs_auto_void_on_credit_note = (value == 'true')
 
     def _inverse_afs_auto_void_on_credit_note(self):
         icp = self.env['ir.config_parameter'].sudo()
         for rec in self:
-            icp.set_param('afs_pos_integration.auto_void_on_credit_note',
-                           'true' if rec.afs_auto_void_on_credit_note else 'false')
+            icp.set_param(AUTO_VOID_PARAM, 'true' if rec.afs_auto_void_on_credit_note else 'false')
 
     @api.depends_context('uid')
     def _compute_afs_terminal_param_hint(self):

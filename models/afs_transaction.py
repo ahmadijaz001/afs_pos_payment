@@ -52,7 +52,6 @@ class AfsTransaction(models.Model):
     operation = fields.Selection([
         ('sale', 'Sale'),
         ('void', 'Void'),
-        ('enquiry', 'Enquiry'),
         ('settlement', 'Settlement'),
         ('cancel', 'Request Cancellation'),
     ], required=True)
@@ -162,6 +161,37 @@ class AfsTransaction(models.Model):
             'AFS transactions cannot be deleted. This is the audit trail for '
             'card payments and must remain intact.'
         ))
+
+    @staticmethod
+    def _result_to_vals(result):
+        """Stored fields for a parsed AFS response (pass it through
+        afs.terminal._parse_response first: PAN masking, terminal time -> UTC)."""
+        return {
+            'response_xml': result.response_xml,
+            'web_response_status': result.web_response_status,
+            'web_response_error': result.web_response_error,
+            'pos_resp_code': result.pos_resp_code,
+            'pos_resp_text': result.pos_resp_text,
+            'pos_resp_status': result.pos_resp_status,
+            'pos_amount': result.pos_amount or 0.0,
+            'pos_currency_code': result.pos_currency_code,
+            'pos_auth_code': result.pos_auth_code,
+            'pos_rrn': result.pos_rrn,
+            'pos_stan': result.pos_stan,
+            'pos_invoice_number': result.pos_invoice_number,
+            'pos_batch_number': result.pos_batch_number,
+            'pos_pan': result.pos_pan,
+            'pos_issuer_name': result.pos_issuer_name,
+            'pos_scheme': result.pos_scheme,
+            'pos_emv_aid': result.pos_emv_aid,
+            'pos_emv_tvr': result.pos_emv_tvr,
+            'pos_emv_cryptogram': result.pos_emv_cryptogram,
+            'pos_entry_mode': result.pos_entry_mode,
+            'pos_cvm_id': result.pos_cvm_id,
+            'pos_txn_name': result.pos_txn_name,
+            'pos_datetime': result.pos_datetime,
+            'pos_receipt': result.pos_receipt,
+        }
 
     # ------------------------------------------------------------------
     # Starting a terminal call
@@ -340,7 +370,7 @@ class AfsTransaction(models.Model):
     def _finalize_sale(self, result):
         self.ensure_one()
         state = afs_client.classify(result)
-        vals = self._approved_sale_vals(result) if result.approved else dict(_result_to_vals(result), state=state)
+        vals = self._approved_sale_vals(result) if result.approved else dict(self._result_to_vals(result), state=state)
         wrote = self._safe_finalize_by_id(
             self.id, vals,
             late_reason=_('the original Sale attempt was already cancelled/finalized before this response arrived'),
@@ -370,7 +400,7 @@ class AfsTransaction(models.Model):
         row. If the card was charged, that must never depend on winning a race
         against a Cancel click."""
         self.ensure_one()
-        vals = dict(_result_to_vals(result), state='approved')
+        vals = dict(self._result_to_vals(result), state='approved')
         payment_id, payment_error = self._register_payment(result)
         if payment_id:
             vals['payment_id'] = payment_id
@@ -419,7 +449,7 @@ class AfsTransaction(models.Model):
         outcome = afs_client.classify(result)
         if outcome in ('declined', 'cancelled'):
             # Keyed lookup, not a guess: trust a declined/cancelled outcome for our own reference.
-            vals = _result_to_vals(result)
+            vals = self._result_to_vals(result)
             vals['state'] = outcome
             if self._safe_finalize_by_id(self.id, vals, late_reason=late_reason):
                 self._post_chatter(move_id, _(
@@ -575,11 +605,12 @@ class AfsTransaction(models.Model):
                 move_id = void_txn.move_id.id
                 config = terminal._get_config()
                 client = terminal._get_client()
-                # Original terminal invoice number ONLY, auth code and RRN left
+                # Original terminal invoice number only, auth code and RRN left
                 # empty — spec §3.2 ("one of the following fields") and the
-                # DLL's VoidByInvoice(invoiceNumber). Verified live: sending
-                # all three, the terminal voids the sale but AFS never returns
-                # the answer (HTTP 524); invoice number alone returns at once.
+                # DLL's VoidByInvoice(invoiceNumber), as in the AFS Postman
+                # sample. Lost Void answers (HTTP 524) were caused by sending the
+                # Void seconds after its Sale, not by these fields: see
+                # afs.terminal.void_delay_seconds.
                 request_xml = afs_client.build_void_envelope(
                     config, '', sale_txn.pos_invoice_number, '',
                     self._build_printer(terminal, void_txn.our_reference))
@@ -615,13 +646,14 @@ class AfsTransaction(models.Model):
                     }, late_reason=late_reason)
                     return
                 result = void_txn.terminal_id._parse_response(response_xml)
+                outcome = afs_client.classify(result)
                 if transport_exc is not None:
                     _logger.info('AFS: Void %s recovered via EnquiryByRef after: %s', void_txn_id, transport_exc)
-                vals = _result_to_vals(result)
+                vals = self._result_to_vals(result)
                 vals.update({
                     # A declined Void is an error on our side (nothing reversed);
                     # PosRespStatus -1 stays unknown.
-                    'state': {'declined': 'error'}.get(afs_client.classify(result), afs_client.classify(result)),
+                    'state': 'error' if outcome == 'declined' else outcome,
                     'error_message': '' if result.approved else (result.pos_resp_text or result.web_response_error),
                 })
                 wrote = void_txn._safe_finalize_by_id(void_txn_id, vals, late_reason=late_reason)
@@ -943,8 +975,7 @@ class AfsTransaction(models.Model):
         dropped connection with no recoverable outcome would be flagged."""
         now = fields.Datetime.now()
         for txn in self.sudo().search([('state', '=', 'pending'), ('started_at', '!=', False)]):
-            grace = (txn.terminal_id.timeout or 180) + 120
-            if txn.started_at <= now - timedelta(seconds=grace):
+            if txn.started_at <= now - timedelta(seconds=txn.terminal_id._in_flight_window()):
                 txn.write({
                     'state': 'unknown',
                     'error_message': _(
@@ -1020,32 +1051,3 @@ def schedule_void_after_commit(env, sale_txn, credit_note):
         return
     env.cr.postcommit.add(functools.partial(
         _postcommit_start_void, env.cr.dbname, env.uid, dict(env.context), sale_txn.id, credit_note.id))
-
-
-def _result_to_vals(result: 'afs_client.AfsResult') -> dict:
-    return {
-        'response_xml': result.response_xml,
-        'web_response_status': result.web_response_status,
-        'web_response_error': result.web_response_error,
-        'pos_resp_code': result.pos_resp_code,
-        'pos_resp_text': result.pos_resp_text,
-        'pos_resp_status': result.pos_resp_status,
-        'pos_amount': result.pos_amount or 0.0,
-        'pos_currency_code': result.pos_currency_code,
-        'pos_auth_code': result.pos_auth_code,
-        'pos_rrn': result.pos_rrn,
-        'pos_stan': result.pos_stan,
-        'pos_invoice_number': result.pos_invoice_number,
-        'pos_batch_number': result.pos_batch_number,
-        'pos_pan': result.pos_pan,
-        'pos_issuer_name': result.pos_issuer_name,
-        'pos_scheme': result.pos_scheme,
-        'pos_emv_aid': result.pos_emv_aid,
-        'pos_emv_tvr': result.pos_emv_tvr,
-        'pos_emv_cryptogram': result.pos_emv_cryptogram,
-        'pos_entry_mode': result.pos_entry_mode,
-        'pos_cvm_id': result.pos_cvm_id,
-        'pos_txn_name': result.pos_txn_name,
-        'pos_datetime': result.pos_datetime,
-        'pos_receipt': result.pos_receipt,
-    }
