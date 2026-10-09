@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="res_config_settings_view_form_afs" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.afs</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app data-string="AFS POS Integration" string="AFS POS Integration" name="afs_pos_integration"
+                     groups="afs_pos_integration.group_afs_manager">
+                    <block title="AFS POS Integration" name="afs_pos_setting_container">
+                        <setting string="Default Terminal" help="Used to pre-select a terminal on the invoice payment wizard.">
+                            <field name="afs_default_terminal_id" options="{'no_create': True}"/>
+                        </setting>
+                        <setting string="Auto-Void on Credit Note Post"
+                                  help="On by default — see the field's tooltip for what this does.">
+                            <field name="afs_auto_void_on_credit_note"/>
+                        </setting>
+                        <setting string="Secure Key Parameters" help="Which ir.config_parameter key each configured terminal expects.">
+                            <field name="afs_terminal_param_hint" widget="text" readonly="1" nolabel="1"/>
+                        </setting>
+                    </block>
+                </app>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <menuitem id="afs_root_menu" name="AFS POS" sequence="90"
+              groups="afs_pos_integration.group_afs_user"/>
+
+    <menuitem id="afs_transaction_menu" name="Transactions" parent="afs_root_menu"
+              action="afs_transaction_action" sequence="10"/>
+
+    <menuitem id="afs_terminal_menu" name="Terminals" parent="afs_root_menu"
+              action="afs_terminal_action" sequence="20"
+              groups="afs_pos_integration.group_afs_manager"/>
+
+</odoo>

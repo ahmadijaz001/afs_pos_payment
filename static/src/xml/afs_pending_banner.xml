@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<templates xml:space="preserve">
+    <t t-name="afs_pos_integration.AfsPendingBanner">
+        <div class="alert alert-info d-flex align-items-center gap-2 mb-2 py-2" t-if="isPending or isReversing" role="alert">
+            <i class="fa fa-spinner fa-spin" aria-hidden="true"/>
+            <span t-esc="message"/>
+            <button type="button" class="btn btn-sm btn-secondary ms-auto"
+                    t-on-click="onCancelClick" t-att-disabled="state.cancelling">
+                Cancel
+            </button>
+        </div>
+    </t>
+</templates>

@@ -1,0 +1,7 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_afs_terminal_user,afs.terminal.user,model_afs_terminal,group_afs_user,1,0,0,0
+access_afs_terminal_manager,afs.terminal.manager,model_afs_terminal,group_afs_manager,1,1,1,1
+access_afs_transaction_user,afs.transaction.user,model_afs_transaction,group_afs_user,1,1,1,0
+access_afs_transaction_manager,afs.transaction.manager,model_afs_transaction,group_afs_manager,1,1,1,1
+access_afs_payment_wizard_user,afs.payment.wizard.user,model_afs_payment_wizard,group_afs_user,1,1,1,1
+access_afs_payment_wizard_manager,afs.payment.wizard.manager,model_afs_payment_wizard,group_afs_manager,1,1,1,1

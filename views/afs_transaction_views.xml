@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="afs_transaction_view_list" model="ir.ui.view">
+        <field name="name">afs.transaction.list</field>
+        <field name="model">afs.transaction</field>
+        <field name="arch" type="xml">
+            <list string="AFS Transactions" create="false" default_order="create_date desc"
+                  decoration-success="state == 'approved'"
+                  decoration-danger="state in ('declined', 'error')"
+                  decoration-warning="state in ('pending', 'unknown')">
+                <field name="create_date" string="Date"/>
+                <field name="move_id"/>
+                <field name="terminal_id"/>
+                <field name="operation"/>
+                <field name="requested_amount"/>
+                <field name="pos_amount"/>
+                <field name="currency_id" column_invisible="1"/>
+                <field name="pos_auth_code"/>
+                <field name="pos_rrn"/>
+                <field name="pos_invoice_number"/>
+                <field name="state" widget="badge"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="afs_transaction_view_form" model="ir.ui.view">
+        <field name="name">afs.transaction.form</field>
+        <field name="model">afs.transaction</field>
+        <field name="arch" type="xml">
+            <form string="AFS Transaction" create="false" edit="false">
+                <header>
+                    <button name="action_void" type="object" string="Direct Void (no Credit Note)" class="btn-secondary"
+                            invisible="operation != 'sale' or state != 'approved' or reversed_by_id"
+                            confirm="This voids the card payment directly, without a credit note. The standard way to reverse a card payment is the 'Reverse Card Payment' button on the invoice. This will refund the full amount back to the card automatically. Continue?"
+                            groups="afs_pos_integration.group_afs_manager"/>
+                    <button name="action_request_cancellation" type="object" string="Request Cancellation"
+                            invisible="state != 'pending'"/>
+                    <field name="state" widget="statusbar" statusbar_visible="pending,approved,declined,unknown,error"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group string="Link">
+                            <field name="move_id"/>
+                            <field name="terminal_id"/>
+                            <field name="payment_id"/>
+                            <field name="reverses_id"/>
+                            <field name="reversed_by_id"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                        </group>
+                        <group string="Request">
+                            <field name="operation"/>
+                            <field name="requested_amount"/>
+                            <field name="currency_id"/>
+                            <field name="our_reference"/>
+                        </group>
+                    </group>
+                    <group string="Terminal Response">
+                        <group>
+                            <field name="pos_amount"/>
+                            <field name="pos_currency_code"/>
+                            <field name="pos_auth_code"/>
+                            <field name="pos_rrn"/>
+                            <field name="pos_stan"/>
+                            <field name="pos_invoice_number"/>
+                            <field name="pos_batch_number"/>
+                        </group>
+                        <group>
+                            <field name="pos_resp_code"/>
+                            <field name="pos_resp_text"/>
+                            <field name="pos_resp_status"/>
+                            <field name="pos_pan"/>
+                            <field name="pos_issuer_name"/>
+                            <field name="pos_scheme"/>
+                            <field name="pos_datetime"/>
+                        </group>
+                    </group>
+                    <group invisible="not error_message" string="Error">
+                        <field name="error_message" nolabel="1"/>
+                    </group>
+                    <notebook>
+                        <page string="Receipt" invisible="not pos_receipt">
+                            <field name="pos_receipt" widget="text" readonly="1"/>
+                        </page>
+                        <page string="Request XML">
+                            <field name="request_xml" widget="text" readonly="1"/>
+                        </page>
+                        <page string="Response XML">
+                            <field name="response_xml" widget="text" readonly="1"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="afs_transaction_view_search" model="ir.ui.view">
+        <field name="name">afs.transaction.search</field>
+        <field name="model">afs.transaction</field>
+        <field name="arch" type="xml">
+            <search string="AFS Transactions">
+                <field name="move_id"/>
+                <field name="terminal_id"/>
+                <field name="pos_auth_code"/>
+                <field name="pos_rrn"/>
+                <field name="pos_invoice_number"/>
+                <filter name="filter_approved" string="Approved" domain="[('state', '=', 'approved')]"/>
+                <filter name="filter_needs_attention" string="Needs Attention" domain="[('state', 'in', ('unknown', 'error'))]"/>
+                <filter name="filter_pending" string="Pending" domain="[('state', '=', 'pending')]"/>
+                <separator/>
+                <filter name="filter_sale" string="Sales" domain="[('operation', '=', 'sale')]"/>
+                <filter name="filter_void" string="Voids" domain="[('operation', '=', 'void')]"/>
+                <group expand="0" string="Group By">
+                    <filter name="group_terminal" string="Terminal" context="{'group_by': 'terminal_id'}"/>
+                    <filter name="group_state" string="Status" context="{'group_by': 'state'}"/>
+                    <filter name="group_operation" string="Operation" context="{'group_by': 'operation'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="afs_transaction_action" model="ir.actions.act_window">
+        <field name="name">AFS Transactions</field>
+        <field name="res_model">afs.transaction</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="afs_transaction_view_search"/>
+    </record>
+
+</odoo>

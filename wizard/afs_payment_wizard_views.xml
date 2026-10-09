@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="afs_payment_wizard_view_form" model="ir.ui.view">
+        <field name="name">afs.payment.wizard.form</field>
+        <field name="model">afs.payment.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Pay by Card">
+                <field name="move_id" invisible="1"/>
+                <field name="currency_id" invisible="1"/>
+                <group>
+                    <field name="terminal_id" options="{'no_create': True, 'no_open': True}"/>
+                    <field name="amount"/>
+                </group>
+                <p class="text-muted">
+                    Confirming will prompt the customer's card on the selected terminal.
+                    This can take up to the terminal's configured timeout while the
+                    cardholder taps and enters a PIN.
+                </p>
+                <footer>
+                    <button name="action_confirm" type="object" string="Charge Card" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

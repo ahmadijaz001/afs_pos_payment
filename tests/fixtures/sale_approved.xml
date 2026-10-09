@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SaleResponse xmlns:a="http://schemas.datacontract.org/2004/07/" xmlns="http://tempuri.org/">
+    <SaleResult>
+        <a:PosAmount>1.0000000000</a:PosAmount>
+        <a:PosAuthCode>974086</a:PosAuthCode>
+        <a:PosBatchNumber>001</a:PosBatchNumber>
+        <a:PosCurrencyCode>784</a:PosCurrencyCode>
+        <a:PosDate>20260916</a:PosDate>
+        <a:PosEmvAid>A0000000031010</a:PosEmvAid>
+        <a:PosEmvAppName>Visa DEBIT</a:PosEmvAppName>
+        <a:PosInvoiceNumber>000006</a:PosInvoiceNumber>
+        <a:PosIssuerName>VISA</a:PosIssuerName>
+        <a:PosPan>408578******5322</a:PosPan>
+        <a:PosRRN>625969470006</a:PosRRN>
+        <a:PosRespCode>00</a:PosRespCode>
+        <a:PosRespStatus>1</a:PosRespStatus>
+        <a:PosRespText>Approved</a:PosRespText>
+        <a:PosStan>000006</a:PosStan>
+        <a:PosTime>110027</a:PosTime>
+        <a:WebResponseStatus>Success</a:WebResponseStatus>
+    </SaleResult>
+</SaleResponse>

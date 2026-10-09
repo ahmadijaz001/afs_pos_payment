@@ -1,0 +1,23 @@
+<section style="max-width: 800px; margin: 0 auto; font-family: -apple-system, Helvetica, Arial, sans-serif;">
+    <h1>AFS POS Integration</h1>
+    <p>
+        Take an AFS payment-terminal card payment directly from a posted customer
+        invoice, record the full terminal response against that invoice, register
+        and reconcile the payment, and reverse it with Void while the batch is
+        still open.
+    </p>
+    <h2>Highlights</h2>
+    <ul>
+        <li>Multiple terminals (<code>afs.terminal</code>), each with its own MID/TID/journal — secrets stay in System Parameters, never on the record.</li>
+        <li>Every API attempt is recorded on <code>afs.transaction</code> as an append-only audit trail, not just the final outcome.</li>
+        <li>Full terminal response (auth code, RRN, STAN, batch, masked PAN, scheme, EMV data) stored on the invoice itself.</li>
+        <li>Void-based full-amount reversal, with pre-flight checks for amount match and open-batch status.</li>
+        <li>A dropped connection during Sale is never retried automatically — recovery is a conservative Enquiry-based heuristic, otherwise the transaction is flagged unknown for manual resolution.</li>
+    </ul>
+    <h2>Requirements</h2>
+    <ul>
+        <li>Odoo 18 Enterprise, Accounting/Invoicing installed.</li>
+        <li>Python package <code>requests</code>.</li>
+        <li>An AFS ECR merchant account and terminal credentials (MID/TID/Tenant/MerchantSecureKey).</li>
+    </ul>
+</section>

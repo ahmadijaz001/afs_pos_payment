@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="0">
+
+        <record id="module_category_afs_pos" model="ir.module.category">
+            <field name="name">AFS POS Integration</field>
+            <field name="sequence">20</field>
+        </record>
+
+        <record id="group_afs_user" model="res.groups">
+            <field name="name">Take Card Payments</field>
+            <field name="category_id" ref="module_category_afs_pos"/>
+            <field name="comment">Can take card payments on configured AFS terminals and view the resulting transactions.</field>
+        </record>
+
+        <record id="group_afs_manager" model="res.groups">
+            <field name="name">Manage AFS Terminals</field>
+            <field name="category_id" ref="module_category_afs_pos"/>
+            <field name="implied_ids" eval="[(4, ref('group_afs_user'))]"/>
+            <field name="users" eval="[(4, ref('base.user_admin'))]"/>
+            <field name="comment">Can configure terminals, reverse (Void) card payments and run Settlement.</field>
+        </record>
+
+        <!-- Multi-company: users only see terminals/transactions of companies they have access to. -->
+        <record id="afs_terminal_company_rule" model="ir.rule">
+            <field name="name">AFS Terminal: multi-company</field>
+            <field name="model_id" ref="model_afs_terminal"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+        </record>
+
+        <record id="afs_transaction_company_rule" model="ir.rule">
+            <field name="name">AFS Transaction: multi-company</field>
+            <field name="model_id" ref="model_afs_transaction"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+        </record>
+
+    </data>
+</odoo>
