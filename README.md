@@ -12,14 +12,21 @@ posted customer invoice.
    **Paid** instead of **In Payment** — verify this on staging against a real
    invoice before relying on it.
 2. **Settings → General Settings → System Parameters** — add a key holding
-   each terminal's `MerchantSecureKey`, e.g. `afs_pos.secure_key.reception_dubai`.
-   Only Settings administrators (`base.group_system`) can read
-   `ir.config_parameter` at all — that is core Odoo behaviour, not something
-   this module adds.
+   each terminal's `MerchantSecureKey`. The key name **must** start with
+   `afs_pos.secure_key.`, e.g. `afs_pos.secure_key.reception_dubai`; the
+   module refuses any other parameter name, so a terminal can never be made
+   to send an unrelated secret. Only Settings administrators
+   (`base.group_system`) can read `ir.config_parameter` at all.
 3. **AFS POS → Terminals** — create one `afs.terminal` record per physical
    terminal: MID, TID, Tenant, the secure-key parameter name above, the
-   clearing journal, and the settlement currency. Use **Test Connection**
-   (an `Enquiry` call) to confirm credentials before going live.
+   clearing journal, the settlement currency and the terminal's timezone
+   (default `Asia/Dubai`; terminal times are converted to UTC with it).
+   The **Secure Key Parameter** and **Endpoint URL** can only be set or
+   changed by a Settings administrator, and the endpoint must be `https://`
+   on `*.afs.com.bh` — add other hosts, comma-separated, to the system
+   parameter `afs_pos_integration.allowed_endpoint_hosts` if AFS gives you
+   one. Use **Test Connection** (a `RequestCancellation` call) to confirm
+   credentials before going live.
 4. **Settings → AFS POS Integration** — optionally set a default terminal.
    **Auto-Void on Credit Note Post** is on by default: it's what makes
    **Reverse Card Payment** actually reverse the card charge (see below).
@@ -40,19 +47,25 @@ posted customer invoice.
   flags anything still `pending` well past its terminal's timeout as
   **Unknown**, in case a worker died mid-transaction; it is not how the
   normal flow resolves.
-- **Reverse Card Payment** (on the invoice) opens the standard Odoo credit
-  note wizard for that invoice — it does not touch the terminal by itself.
-  Posting the resulting credit note is what triggers `Void` automatically,
-  refunding the full original amount back to the card. The button disappears
-  once the payment has actually been reversed. `Void` has no amount field, so
-  a credit note for anything other than the full original amount is refused
-  at posting time — partial refunds must be processed on the terminal or via
-  AFS directly. Managers also have a **Direct Void (no Credit Note)** button
-  on the transaction record itself, for the rare case where a credit note
-  isn't wanted at all.
+- **Reverse Card Payment** (on the invoice, AFS managers only) opens the
+  standard Odoo credit note wizard for that invoice; the credit note it
+  creates is ticked **Void Card Payment on Post**. Posting that credit note
+  (AFS managers only) triggers `Void` once the posting has committed,
+  refunding the full original amount to the card; when AFS approves, the card
+  payment is cancelled and the credit note is reconciled with the invoice.
+  Credit notes created any other way (corrections, re-issues) are not ticked
+  and never touch the terminal. `Void` has no amount field, so a *ticked*
+  credit note for anything other than the full card amount is refused at
+  posting time — untick it and process partial refunds on the terminal or
+  via AFS. Managers also have a **Direct Void (no Credit Note)** button on
+  the transaction record itself.
 - Every attempt (approved, declined, or otherwise) is kept on **AFS POS →
-  Transactions** — this is the audit trail for a card-payment dispute and is
-  append-only by design.
+  Transactions** — this is the audit trail for a card-payment dispute. It is
+  append-only: users (managers included) have read-only access, records are
+  only ever written by the module itself, and nothing can be deleted.
+- A terminal runs one Sale/Void at a time. While a call is in flight
+  (started, not yet returned, within the terminal timeout + 2 minutes) any
+  other Sale, Void or Settlement on that terminal is refused as busy.
 - If a Sale's connection drops mid-call, the module does **not** retry. It
   recovers via `EnquiryByRef`, keyed by the unique reference generated for
   that attempt (not a blank `Enquiry`, which can't be tied to a specific

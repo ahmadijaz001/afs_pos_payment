@@ -8,11 +8,13 @@
         <field name="arch" type="xml">
 
             <button name="action_register_payment" id="account_invoice_payment_btn" position="after">
+                <field name="afs_state" invisible="1"/>
                 <button name="action_afs_pay" type="object" string="Pay by Card" class="oe_highlight"
                         invisible="move_type not in ('out_invoice', 'out_receipt')
                                     or state != 'posted'
                                     or payment_state not in ('not_paid', 'partial')
-                                    or afs_state == 'pending'"/>
+                                    or afs_state == 'pending'"
+                        groups="afs_pos_integration.group_afs_user"/>
                 <button name="action_afs_reverse" type="object" string="Reverse Card Payment"
                         invisible="afs_state != 'paid'"
                         groups="afs_pos_integration.group_afs_manager"/>
@@ -20,20 +22,27 @@
 
             <div name="button_box" position="inside">
                 <button name="action_view_afs_transactions" type="object" class="oe_stat_button" icon="fa-credit-card"
-                        invisible="afs_transaction_count == 0">
+                        invisible="afs_transaction_count == 0"
+                        groups="afs_pos_integration.group_afs_user">
                     <field name="afs_transaction_count" widget="statinfo" string="Card Payments"/>
                 </button>
             </div>
 
             <xpath expr="//div[hasclass('oe_title')]" position="after">
-                <widget name="afs_pending_banner"/>
+                <widget name="afs_pending_banner" groups="afs_pos_integration.group_afs_user"/>
             </xpath>
 
             <group id="other_tab_group" position="inside">
+                <group string="Card Refund" name="afs_refund_group"
+                       invisible="move_type != 'out_refund' or not reversed_entry_id"
+                       groups="afs_pos_integration.group_afs_manager">
+                    <field name="afs_void_on_post" readonly="state != 'draft'"/>
+                </group>
                 <group string="Card Payment" name="afs_group"
-                       invisible="afs_state == 'none'">
+                       invisible="afs_state == 'none'"
+                       groups="afs_pos_integration.group_afs_user">
                     <field name="afs_terminal_id"/>
-                    <field name="afs_state" widget="badge"/>
+                    <field name="afs_state" widget="badge" string="Card Payment Status"/>
                     <field name="afs_auth_code"/>
                     <field name="afs_rrn"/>
                     <field name="afs_stan"/>

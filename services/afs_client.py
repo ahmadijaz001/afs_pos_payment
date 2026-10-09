@@ -16,12 +16,6 @@ TEM_NS = "http://tempuri.org/"
 DC_NS = "http://schemas.datacontract.org/2004/07/"
 SOAP_ACTION_BASE = "http://tempuri.org/IEcrComInterface/"
 
-# Shared between the Sale wizard and Void (models/afs_transaction.py): an
-# offset added to a terminal's id before taking a PostgreSQL advisory lock.
-# Both use the SAME key per terminal, because the physical terminal can only
-# run one operation at a time regardless of which Odoo flow started it.
-TERMINAL_ADVISORY_LOCK_OFFSET = 913000000000
-
 # ISO 4217 numeric -> alpha, limited to the currencies AFS quotes in the UAE/GCC.
 CURRENCY_NUMERIC_TO_ALPHA = {
     "784": "AED",
@@ -36,8 +30,16 @@ CURRENCY_NUMERIC_TO_ALPHA = {
     "356": "INR",
 }
 
-# Masked PAN as returned by the terminal, e.g. "408578******5322"; a full PAN reaching this is a PCI incident.
-PAN_MASK_RE = re.compile(r"^\d{6}\*+\d{4}$")
+# Masked PAN as returned by the terminal, e.g. "408578******5322", "************5322"
+# or "4085XXXXXXXX5322": at most the first 8 and last 4 digits visible (PCI DSS),
+# 12-19 characters overall. A full PAN reaching this is a PCI incident.
+PAN_MASK_RE = re.compile(r"^(?=.{12,19}$)\d{0,8}[*Xx#]{3,}\d{0,4}$")
+# Candidate full PANs inside free text (receipts): 13-19 consecutive digits.
+_PAN_CANDIDATE_RE = re.compile(r"(?<!\d)\d{13,19}(?!\d)")
+# Raw-XML elements that can carry card numbers.
+_PAN_ELEMENT_RE = re.compile(
+    r"(<(?:[\w]+:)?(?:PosPan|[\w]*Track[\w]*)[^>]*>)([^<]*)(</(?:[\w]+:)?(?:PosPan|[\w]*Track[\w]*)>)"
+)
 
 _AMOUNT_QUANT = Decimal("0.01")
 
@@ -48,6 +50,49 @@ class AfsError(Exception):
 
 def is_masked_pan(pan: str) -> bool:
     return bool(pan) and bool(PAN_MASK_RE.match(pan))
+
+
+def mask_pan(pan: str) -> str:
+    """Keep only the last 4 digits. Used when a terminal hands back something
+    that is not a properly masked PAN — never store it as received."""
+    digits = re.sub(r"\D", "", pan or "")
+    if len(digits) < 4:
+        return "*" * 12
+    return "*" * max(len(digits) - 4, 8) + digits[-4:]
+
+
+def _luhn_ok(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def scrub_pans(text: str) -> str:
+    """Mask anything in free text that looks like a full card number (13-19
+    digits passing the Luhn check)."""
+    if not text:
+        return text
+    return _PAN_CANDIDATE_RE.sub(lambda m: mask_pan(m.group(0)) if _luhn_ok(m.group(0)) else m.group(0), text)
+
+
+def scrub_response_xml(xml_text: str) -> str:
+    """Mask PAN/track elements that are not already masked — call before storing raw response XML."""
+    if not xml_text:
+        return xml_text
+
+    def _sub(m):
+        value = m.group(2).strip()
+        if not value or is_masked_pan(value):
+            return m.group(0)
+        return m.group(1) + mask_pan(value) + m.group(3)
+
+    return _PAN_ELEMENT_RE.sub(_sub, xml_text)
 
 
 @dataclass
@@ -112,6 +157,10 @@ class AfsPrinter:
 @dataclass
 class AfsResult:
     approved: bool
+    # The request was stopped before anything was charged, e.g.
+    # WebResponseStatus "Faild" + WebResponseErrorDesc "Cancelled By ECR" in
+    # answer to our own RequestCancellation. A definitive "not charged".
+    cancelled: bool = False
     web_response_status: str = ""
     web_response_error: str = ""
     pos_resp_code: str = ""
@@ -146,6 +195,11 @@ def _local_name(tag: str) -> str:
 
 def _collect_leaf_fields(xml_text: str) -> dict:
     """Flatten every leaf element into {local_tag: text}, ignoring namespace prefixes."""
+    # A SOAP response never needs a DTD; refusing one outright rules out
+    # entity-expansion ("billion laughs") and external-entity tricks from a
+    # spoofed or compromised endpoint.
+    if "<!DOCTYPE" in xml_text.upper():
+        raise AfsError("Refusing to parse an AFS response that contains a DTD.")
     root = ET.fromstring(xml_text)
     fields = {}
     for el in root.iter():
@@ -193,9 +247,12 @@ def parse_response(xml_text: str) -> AfsResult:
     approved = web_status.strip().lower().startswith("success") and (
         resp_code.strip() in ("00", "000") or resp_status.strip() == "1"
     )
+    web_error = fields.get("WebResponseErrorDesc", "")
+    cancelled = not approved and not resp_code.strip() and "cancel" in web_error.lower()
 
     return AfsResult(
         approved=approved,
+        cancelled=cancelled,
         web_response_status=web_status,
         web_response_error=fields.get("WebResponseErrorDesc", ""),
         pos_resp_code=resp_code,
@@ -284,8 +341,28 @@ def build_cancellation_envelope(config: AfsConfig) -> str:
     return _envelope("RequestCancellation", config.to_xml())
 
 
+def classify(result: AfsResult) -> str:
+    """Outcome per spec §10 / the C# sample: WebResponseStatus first (Success /
+    Faild = the web call itself), then PosRespStatus (-1 unknown, 0 declined,
+    1 approved). A 0 with no PosRespCode at all is NOT a decline: that is what
+    AFS returns when it has no record (e.g. EnquiryByRef for a reference it
+    never saw), so it stays 'unknown'."""
+    if result.approved:
+        return "approved"
+    if result.cancelled:
+        return "cancelled"
+    web_ok = result.web_response_status.strip().lower().startswith("success")
+    if web_ok and result.pos_resp_status.strip() == "0" and result.pos_resp_code.strip():
+        return "declined"
+    return "unknown"
+
+
 def correlate_recovery(result: AfsResult, expected_amount: Decimal, sale_started_at: datetime, skew_seconds: int = 60) -> bool:
-    """After a dropped Sale connection: trust a no-reference Enquiry only if amount AND timestamp both match; else unknown."""
+    """After a dropped Sale connection: trust a no-reference Enquiry only if amount AND timestamp both match; else unknown.
+
+    ``result.pos_datetime`` and ``sale_started_at`` must be in the same
+    timezone — the Odoo layer converts the terminal's local time to UTC first
+    (afs.terminal._parse_response)."""
     if result.pos_amount is None or result.pos_datetime is None:
         return False
     if result.pos_amount != Decimal(expected_amount).quantize(_AMOUNT_QUANT, rounding=ROUND_HALF_UP):
@@ -307,7 +384,12 @@ class AfsClient:
             "Content-Type": "text/xml; charset=utf-8",
             "SOAPAction": f"{SOAP_ACTION_BASE}{operation}",
         }
-        resp = requests.post(self.endpoint_url, data=envelope.encode("utf-8"), headers=headers, timeout=self.timeout)
+        # No redirects: a 307/308 would re-send the body, MerchantSecureKey
+        # included, to whatever host the redirect names.
+        resp = requests.post(self.endpoint_url, data=envelope.encode("utf-8"), headers=headers,
+                             timeout=self.timeout, allow_redirects=False)
+        if 300 <= resp.status_code < 400:
+            raise AfsError(f"AFS endpoint answered with a redirect (HTTP {resp.status_code}); refusing to follow it.")
         resp.raise_for_status()
         return resp.text
 

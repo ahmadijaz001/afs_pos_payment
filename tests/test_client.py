@@ -166,6 +166,97 @@ class TestPanMasking(unittest.TestCase):
         self.assertFalse(afs_client.is_masked_pan('4085781234565322'))
         self.assertFalse(afs_client.is_masked_pan(''))
 
+    def test_other_masking_styles_accepted(self):
+        self.assertTrue(afs_client.is_masked_pan('************5322'))
+        self.assertTrue(afs_client.is_masked_pan('4085XXXXXXXX5322'))
+        self.assertTrue(afs_client.is_masked_pan('40857812****5322'))
+
+    def test_too_many_visible_digits_rejected(self):
+        # 9 leading digits visible is more than PCI DSS allows.
+        self.assertFalse(afs_client.is_masked_pan('408578123***5322'))
+
+    def test_mask_pan_keeps_last_four_only(self):
+        masked = afs_client.mask_pan('4085781234565322')
+        self.assertTrue(masked.endswith('5322'))
+        self.assertNotIn('408578', masked)
+        self.assertTrue(afs_client.is_masked_pan(masked))
+
+    def test_scrub_pans_masks_luhn_valid_numbers_only(self):
+        text = 'CARD 4111111111111111 RRN 625969470006 REF 1234567890123'
+        scrubbed = afs_client.scrub_pans(text)
+        self.assertNotIn('4111111111111111', scrubbed)
+        self.assertIn('1111', scrubbed)
+        self.assertIn('625969470006', scrubbed)  # 12 digits: not a PAN candidate
+        self.assertIn('1234567890123', scrubbed)  # fails Luhn: left alone
+
+    def test_scrub_response_xml_masks_unmasked_pan_element(self):
+        xml = '<a:PosPan>4111111111111111</a:PosPan><a:PosRRN>625969470006</a:PosRRN>'
+        scrubbed = afs_client.scrub_response_xml(xml)
+        self.assertNotIn('4111111111111111', scrubbed)
+        self.assertIn('<a:PosRRN>625969470006</a:PosRRN>', scrubbed)
+
+    def test_scrub_response_xml_keeps_masked_pan(self):
+        xml = '<a:PosPan>408578******5322</a:PosPan>'
+        self.assertEqual(afs_client.scrub_response_xml(xml), xml)
+
+
+class TestCancelledResponse(unittest.TestCase):
+
+    def test_cancelled_by_ecr_is_cancelled_not_unknown(self):
+        xml = ('<r xmlns:a="x"><a:PosAmount>0.0000000000</a:PosAmount><a:PosRespStatus>0</a:PosRespStatus>'
+               '<a:WebResponseErrorDesc>Cancelled By ECR</a:WebResponseErrorDesc>'
+               '<a:WebResponseStatus>Faild</a:WebResponseStatus></r>')
+        result = afs_client.parse_response(xml)
+        self.assertFalse(result.approved)
+        self.assertTrue(result.cancelled)
+
+    def test_decline_is_not_a_cancellation(self):
+        xml = ('<r><PosRespCode>05</PosRespCode><PosRespText>Declined</PosRespText>'
+               '<WebResponseStatus>Success</WebResponseStatus></r>')
+        self.assertFalse(afs_client.parse_response(xml).cancelled)
+
+
+class TestClassify(unittest.TestCase):
+    """Outcome rules from spec §10 and the live UAE endpoint."""
+
+    def _r(self, **kw):
+        return afs_client.AfsResult(approved=kw.pop('approved', False), **kw)
+
+    def test_approved(self):
+        self.assertEqual(afs_client.classify(self._r(approved=True)), 'approved')
+
+    def test_declined_needs_status_0_and_a_response_code(self):
+        r = self._r(web_response_status='Success', pos_resp_status='0', pos_resp_code='05')
+        self.assertEqual(afs_client.classify(r), 'declined')
+
+    def test_status_minus_one_is_unknown_not_declined(self):
+        r = self._r(web_response_status='Success', pos_resp_status='-1', pos_resp_code='91')
+        self.assertEqual(afs_client.classify(r), 'unknown')
+
+    def test_no_record_is_unknown_not_declined(self):
+        # Live EnquiryByRef for a reference AFS never saw: Success, status 0, nothing else.
+        r = self._r(web_response_status='Success', pos_resp_status='0')
+        self.assertEqual(afs_client.classify(r), 'unknown')
+
+    def test_web_failed_is_unknown(self):
+        r = self._r(web_response_status='Faild', web_response_error='Terminal not connected')
+        self.assertEqual(afs_client.classify(r), 'unknown')
+
+    def test_spec_void_sample_with_txn_name_sale_is_approved(self):
+        xml = ('<r xmlns:a="x"><a:PosAuthCode>656324</a:PosAuthCode><a:PosRRN>102171037110</a:PosRRN>'
+               '<a:PosRespCode>00</a:PosRespCode><a:PosRespStatus>1</a:PosRespStatus>'
+               '<a:PosTxnName>Sale</a:PosTxnName><a:WebResponseStatus>Success</a:WebResponseStatus></r>')
+        self.assertEqual(afs_client.classify(afs_client.parse_response(xml)), 'approved')
+
+
+class TestXmlSafety(unittest.TestCase):
+
+    def test_dtd_refused(self):
+        xml = ('<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY lol "lol">]>'
+               '<r><WebResponseStatus>&lol;</WebResponseStatus></r>')
+        with self.assertRaises(afs_client.AfsError):
+            afs_client.parse_response(xml)
+
 
 class TestRecoveryCorrelation(unittest.TestCase):
 

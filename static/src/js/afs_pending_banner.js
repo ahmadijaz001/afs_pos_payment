@@ -1,3 +1,4 @@
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 import { standardWidgetProps } from "@web/views/widgets/standard_widget_props";
@@ -20,11 +21,12 @@ export class AfsPendingBanner extends Component {
     setup() {
         this.orm = useService("orm");
         this.busService = useService("bus_service");
+        // Stays true after the click: the record remains pending until the
+        // terminal answers the cancellation, which takes a few seconds.
         this.state = useState({ cancelling: false });
 
         this._onNotification = (payload) => this._handleNotification(payload);
         this.busService.subscribe(NOTIFICATION_TYPE, this._onNotification);
-        this.busService.start();
         onWillUnmount(() => {
             this.busService.unsubscribe(NOTIFICATION_TYPE, this._onNotification);
         });
@@ -39,13 +41,17 @@ export class AfsPendingBanner extends Component {
     }
 
     get message() {
+        if (this.state.cancelling) {
+            return _t("Cancelling on the terminal…");
+        }
         return this.isReversing
-            ? "Reversing this card payment on the terminal…"
-            : "Waiting for the customer to tap or insert their card on the terminal…";
+            ? _t("Reversing this card payment on the terminal…")
+            : _t("Waiting for the customer to tap or insert their card on the terminal…");
     }
 
     async _handleNotification(payload) {
         if (payload && payload.move_id === this.props.record.resId) {
+            this.state.cancelling = false;
             await this.props.record.load();
             this.props.record.model.notify();
         }
@@ -55,8 +61,9 @@ export class AfsPendingBanner extends Component {
         this.state.cancelling = true;
         try {
             await this.orm.call("account.move", "action_afs_cancel_pending", [this.props.record.resId]);
-        } finally {
+        } catch (error) {
             this.state.cancelling = false;
+            throw error;
         }
     }
 }

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'AFS POS Integration',
-    'version': '18.0.3.0.0',
+    'version': '18.0.4.3.0',
     'summary': 'Take AFS card-terminal payments directly from posted customer invoices',
     'description': '''
 AFS POS Integration
@@ -23,8 +23,9 @@ Key points
   so the invoice stays interactive (with a real Cancel) while waiting on the
   cardholder; the outcome is pushed to the browser over the bus.
 - Void-based reversal for full-amount refunds, with pre-flight checks for
-  amount match and open-batch status; reversal goes through a credit note,
-  which triggers Void automatically once posted.
+  amount match and open-batch status; reversal goes through a credit note
+  flagged by "Reverse Card Payment", which triggers Void automatically once
+  posted and is reconciled against the invoice when the Void is approved.
 - A dropped connection during Sale is never retried automatically; recovery
   is keyed on our own reference via EnquiryByRef, otherwise the transaction is
   flagged unknown for manual resolution.
@@ -38,6 +39,7 @@ Key points
     'data': [
         'security/afs_security.xml',
         'security/ir.model.access.csv',
+        'wizard/afs_resolve_wizard_views.xml',
         'views/afs_terminal_views.xml',
         'views/afs_transaction_views.xml',
         'views/account_move_views.xml',

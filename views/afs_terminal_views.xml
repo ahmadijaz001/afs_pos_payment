@@ -46,6 +46,7 @@
                             <field name="secure_key_param"/>
                             <field name="endpoint_url"/>
                             <field name="integrator_name"/>
+                            <field name="tz"/>
                         </group>
                         <group string="Accounting">
                             <field name="company_id" groups="base.group_multi_company"/>
@@ -64,6 +65,7 @@
                         </group>
                         <group string="Behaviour">
                             <field name="timeout"/>
+                            <field name="void_delay_seconds"/>
                             <field name="void_requires_open_batch"/>
                             <field name="last_settlement_batch_number" readonly="1"/>
                             <field name="last_settlement_date" readonly="1"/>

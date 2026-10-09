@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="afs_resolve_wizard_view_form" model="ir.ui.view">
+        <field name="name">afs.resolve.wizard.form</field>
+        <field name="model">afs.resolve.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Resolve Unknown Transaction">
+                <p class="text-muted">
+                    AFS did not return a result for this transaction. Check the terminal receipt
+                    or the AFS portal first, then record what really happened.
+                </p>
+                <group>
+                    <field name="transaction_id"/>
+                    <field name="operation" invisible="1"/>
+                    <field name="outcome" widget="radio"/>
+                    <field name="pos_auth_code" invisible="outcome != 'approved'" required="outcome == 'approved'"/>
+                    <field name="pos_rrn" invisible="outcome != 'approved'" required="outcome == 'approved'"/>
+                    <field name="note" placeholder="e.g. Void receipt printed on terminal, auth 123456 — checked on AFS portal"/>
+                </group>
+                <footer>
+                    <button name="action_resolve" type="object" string="Resolve" class="btn-primary"
+                            confirm="This records the outcome permanently and updates the payment / invoice. Continue?"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="afs_resolve_wizard_action" model="ir.actions.act_window">
+        <field name="name">Resolve Unknown Transaction</field>
+        <field name="res_model">afs.resolve.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+</odoo>

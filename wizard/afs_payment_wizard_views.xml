@@ -8,6 +8,7 @@
             <form string="Pay by Card">
                 <field name="move_id" invisible="1"/>
                 <field name="currency_id" invisible="1"/>
+                <field name="company_id" invisible="1"/>
                 <group>
                     <field name="terminal_id" options="{'no_create': True, 'no_open': True}"/>
                     <field name="amount"/>

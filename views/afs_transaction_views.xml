@@ -7,6 +7,7 @@
         <field name="arch" type="xml">
             <list string="AFS Transactions" create="false" default_order="create_date desc"
                   decoration-success="state == 'approved'"
+                  decoration-muted="state == 'cancelled'"
                   decoration-danger="state in ('declined', 'error')"
                   decoration-warning="state in ('pending', 'unknown')">
                 <field name="create_date" string="Date"/>
@@ -34,14 +35,25 @@
                             invisible="operation != 'sale' or state != 'approved' or reversed_by_id"
                             confirm="This voids the card payment directly, without a credit note. The standard way to reverse a card payment is the 'Reverse Card Payment' button on the invoice. This will refund the full amount back to the card automatically. Continue?"
                             groups="afs_pos_integration.group_afs_manager"/>
+                    <field name="reversal_incomplete" invisible="1"/>
+                    <button name="action_complete_reversal" type="object" string="Complete Reversal" class="btn-primary"
+                            invisible="not reversal_incomplete"
+                            help="AFS approved this Void but the invoice was not updated: mark the sale reversed, cancel the card payment and reconcile the credit note."
+                            groups="afs_pos_integration.group_afs_manager"/>
+                    <button name="%(afs_pos_integration.afs_resolve_wizard_action)d" type="action" string="Resolve"
+                            class="btn-primary"
+                            invisible="state != 'unknown' or operation not in ('sale', 'void')"
+                            context="{'active_id': id, 'active_model': 'afs.transaction'}"
+                            groups="afs_pos_integration.group_afs_manager"/>
                     <button name="action_request_cancellation" type="object" string="Request Cancellation"
                             invisible="state != 'pending'"/>
-                    <field name="state" widget="statusbar" statusbar_visible="pending,approved,declined,unknown,error"/>
+                    <field name="state" widget="statusbar" statusbar_visible="pending,approved,declined,cancelled,unknown,error"/>
                 </header>
                 <sheet>
                     <group>
                         <group string="Link">
                             <field name="move_id"/>
+                            <field name="credit_note_id" invisible="not credit_note_id"/>
                             <field name="terminal_id"/>
                             <field name="payment_id"/>
                             <field name="reverses_id"/>
@@ -53,6 +65,8 @@
                             <field name="requested_amount"/>
                             <field name="currency_id"/>
                             <field name="our_reference"/>
+                            <field name="started_at"/>
+                            <field name="finished_at"/>
                         </group>
                     </group>
                     <group string="Terminal Response">
@@ -74,6 +88,10 @@
                             <field name="pos_scheme"/>
                             <field name="pos_datetime"/>
                         </group>
+                    </group>
+                    <group invisible="not cancel_requested_at" string="Cancellation">
+                        <field name="cancel_requested_at"/>
+                        <field name="cancel_response_status"/>
                     </group>
                     <group invisible="not error_message" string="Error">
                         <field name="error_message" nolabel="1"/>
@@ -107,6 +125,7 @@
                 <filter name="filter_approved" string="Approved" domain="[('state', '=', 'approved')]"/>
                 <filter name="filter_needs_attention" string="Needs Attention" domain="[('state', 'in', ('unknown', 'error'))]"/>
                 <filter name="filter_pending" string="Pending" domain="[('state', '=', 'pending')]"/>
+                <filter name="filter_cancelled" string="Cancelled" domain="[('state', '=', 'cancelled')]"/>
                 <separator/>
                 <filter name="filter_sale" string="Sales" domain="[('operation', '=', 'sale')]"/>
                 <filter name="filter_void" string="Voids" domain="[('operation', '=', 'void')]"/>
