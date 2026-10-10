@@ -210,6 +210,24 @@ class TestCancelledResponse(unittest.TestCase):
         self.assertFalse(result.approved)
         self.assertTrue(result.cancelled)
 
+    def test_transaction_timeout_is_flagged_but_stays_unknown(self):
+        # Captured live: the terminal's card prompt timed out after ~30 s.
+        r = afs_client.parse_response(
+            '<r><PosAmount>0.0000000000</PosAmount><PosRespStatus>0</PosRespStatus>'
+            '<WebResponseErrorDesc>Transaction Timeout</WebResponseErrorDesc>'
+            '<WebResponseStatus>Faild</WebResponseStatus></r>')
+        self.assertTrue(r.timed_out)
+        self.assertFalse(r.cancelled)
+        # Not trusted on its own: the model confirms with EnquiryByRef first.
+        self.assertEqual(afs_client.classify(r), 'unknown')
+
+    def test_decline_is_not_a_timeout(self):
+        r = afs_client.parse_response(
+            '<r><PosRespCode>91</PosRespCode><PosRespStatus>0</PosRespStatus>'
+            '<PosRespText>Issuer timeout</PosRespText><WebResponseErrorDesc>Issuer timeout</WebResponseErrorDesc>'
+            '<WebResponseStatus>Success</WebResponseStatus></r>')
+        self.assertFalse(r.timed_out)
+
     def test_decline_is_not_a_cancellation(self):
         xml = ('<r><PosRespCode>05</PosRespCode><PosRespText>Declined</PosRespText>'
                '<WebResponseStatus>Success</WebResponseStatus></r>')

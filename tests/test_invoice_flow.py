@@ -81,6 +81,14 @@ CANCELLATION_OK_XML = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/en
 <a:WebResponseErrorDesc>Ecr Cancellation</a:WebResponseErrorDesc><a:WebResponseStatus>Success</a:WebResponseStatus>
 </RequestCancellationResult></RequestCancellationResponse></s:Body></s:Envelope>"""
 
+# The terminal's card prompt timed out (captured live, ~30 s after the prompt).
+TIMEOUT_XML = ('<r><PosAmount>0.0000000000</PosAmount><PosRespStatus>0</PosRespStatus>'
+               '<WebResponseErrorDesc>Transaction Timeout</WebResponseErrorDesc>'
+               '<WebResponseStatus>Faild</WebResponseStatus></r>')
+# EnquiryByRef for a reference AFS never processed.
+NO_RECORD_XML = ('<r><PosAmount>0.0000000000</PosAmount><PosRespStatus>0</PosRespStatus>'
+                 '<WebResponseStatus>Success</WebResponseStatus></r>')
+
 DUBAI = pytz.timezone('Asia/Dubai')
 
 
@@ -373,6 +381,67 @@ class TestAfsInvoiceFlow(TransactionCase):
         sale_txn = move.afs_transaction_ids.filtered(lambda t: t.operation == 'sale')
         self.assertEqual(sale_txn.state, 'unknown')
         self.assertFalse(sale_txn.payment_id)
+
+    def _sale_with_responses(self, move, responses):
+        calls = []
+
+        def _side_effect(client_self, operation, envelope):
+            calls.append(operation)
+            answer = responses[operation]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        with patch.object(afs_client.AfsClient, 'post', _side_effect):
+            self._confirm(self._make_wizard(move))
+        self.env.invalidate_all()
+        return move.afs_transaction_ids.filtered(lambda t: t.operation == 'sale'), calls
+
+    def test_terminal_timeout_with_no_afs_record_is_cancelled(self):
+        move = self._create_invoice(amount=1500.0)
+        sale_txn, calls = self._sale_with_responses(
+            move, {'Sale': TIMEOUT_XML, 'EnquiryByRef': NO_RECORD_XML})
+        self.assertEqual(calls, ['Sale', 'EnquiryByRef'], 'the timeout must be confirmed with AFS first')
+        self.assertEqual(len(sale_txn), 1)
+        self.assertEqual(sale_txn.state, 'cancelled')
+        self.assertEqual(sale_txn.web_response_error, 'Transaction Timeout')
+        self.assertFalse(sale_txn.payment_id)
+        self.assertEqual(move.afs_state, 'none', 'the invoice can be paid again without a manual Resolve')
+        self.assertEqual(move.payment_state, 'not_paid')
+
+    def test_terminal_timeout_but_afs_has_approval_registers_payment(self):
+        move = self._create_invoice(amount=1500.0)
+        sale_txn, _calls = self._sale_with_responses(
+            move, {'Sale': TIMEOUT_XML, 'EnquiryByRef': approved_xml()})
+        self.assertEqual(sale_txn.state, 'approved')
+        self.assertTrue(sale_txn.payment_id)
+        self.assertEqual(move.afs_state, 'paid')
+
+    def test_terminal_timeout_with_failed_lookup_stays_unknown(self):
+        move = self._create_invoice(amount=1500.0)
+        sale_txn, _calls = self._sale_with_responses(
+            move, {'Sale': TIMEOUT_XML, 'EnquiryByRef': requests.ConnectionError('lookup failed')})
+        self.assertEqual(sale_txn.state, 'unknown')
+        self.assertFalse(sale_txn.payment_id)
+
+    def test_void_timeout_with_no_afs_record_is_cancelled_not_refunded(self):
+        move = self._create_invoice(amount=1500.0)
+        sale_txn = self._pay(move)
+        payment = sale_txn.payment_id
+        calls = []
+
+        def _side_effect(client_self, operation, envelope):
+            calls.append(operation)
+            return TIMEOUT_XML if operation == 'Void' else NO_RECORD_XML
+
+        with patch.object(afs_client.AfsClient, 'post', _side_effect):
+            void_txn = sale_txn.with_user(self.afs_manager).action_void()
+        self.env.invalidate_all()
+        self.assertEqual(calls, ['Void', 'EnquiryByRef'])
+        self.assertEqual(void_txn.state, 'cancelled')
+        self.assertFalse(sale_txn.reversed_by_id)
+        self.assertEqual(payment.state, 'paid', 'nothing was refunded, so the payment stays')
+        self.assertEqual(move.afs_state, 'paid', 'the Void can simply be run again')
 
     def test_terminal_time_stored_as_utc(self):
         # C6: the terminal reports Dubai local time; Odoo must store UTC.

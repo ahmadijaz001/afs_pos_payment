@@ -42,6 +42,7 @@ _PAN_ELEMENT_RE = re.compile(
 )
 
 _AMOUNT_QUANT = Decimal("0.01")
+_TIMEOUT_RE = re.compile(r"time\s*-?\s*out", re.IGNORECASE)
 
 
 class AfsError(Exception):
@@ -161,6 +162,11 @@ class AfsResult:
     # WebResponseStatus "Faild" + WebResponseErrorDesc "Cancelled By ECR" in
     # answer to our own RequestCancellation. A definitive "not charged".
     cancelled: bool = False
+    # The terminal gave up waiting for the card (seen live: WebResponseStatus
+    # "Faild" + WebResponseErrorDesc "Transaction Timeout", ~30 s after the
+    # prompt). Normally "not charged", but NOT trusted on its own: the caller
+    # confirms with EnquiryByRef first, so classify() keeps it 'unknown'.
+    timed_out: bool = False
     web_response_status: str = ""
     web_response_error: str = ""
     pos_resp_code: str = ""
@@ -253,10 +259,12 @@ def parse_response(xml_text: str) -> AfsResult:
     )
     web_error = fields.get("WebResponseErrorDesc", "")
     cancelled = not approved and not resp_code.strip() and "cancel" in web_error.lower()
+    timed_out = not approved and not resp_code.strip() and bool(_TIMEOUT_RE.search(web_error))
 
     return AfsResult(
         approved=approved,
         cancelled=cancelled,
+        timed_out=timed_out,
         web_response_status=web_status,
         web_response_error=web_error,
         pos_resp_code=resp_code,

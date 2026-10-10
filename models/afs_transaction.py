@@ -339,17 +339,21 @@ class AfsTransaction(models.Model):
                 move_id = txn.move_id.id
                 config = terminal._get_config()
                 client = terminal._get_client()
+                reference = txn.our_reference
                 request_xml = afs_client.build_sale_envelope(
-                    config, txn.requested_amount, self._build_printer(terminal, txn.our_reference))
+                    config, txn.requested_amount, self._build_printer(terminal, reference))
                 if not txn._safe_finalize_by_id(txn_id, {'request_xml': request_xml}, late_reason=None):
                     # Cancelled before we even reached the terminal: never charge.
                     return
 
             response_xml = transport_exc = None
+            not_processed = False
             try:
                 response_xml = client.post('Sale', request_xml)
             except Exception as exc:  # noqa: BLE001 - classified below
                 transport_exc = exc
+            else:
+                response_xml, not_processed = _confirm_timeout(client, config, reference, response_xml)
 
             with registry.cursor() as cr:
                 env = api.Environment(cr, uid, context)
@@ -361,7 +365,9 @@ class AfsTransaction(models.Model):
                     txn._safe_finalize_by_id(txn_id, {'state': 'error', 'error_message': str(transport_exc)},
                                              late_reason=_('an error was being recorded after the transaction was already finalized'))
                 else:
-                    txn._finalize_sale(terminal._parse_response(response_xml))
+                    result = terminal._parse_response(response_xml)
+                    result.cancelled = result.cancelled or not_processed
+                    txn._finalize_sale(result)
         except Exception:  # noqa: BLE001 - never let a background thread crash silently
             _logger.exception('AFS background Sale thread failed for afs.transaction %s', txn_id)
         finally:
@@ -382,6 +388,10 @@ class AfsTransaction(models.Model):
                     'Card was charged (auth %s / RRN %s) even though Cancel was pressed — the '
                     'terminal had already completed the payment. The payment has been registered.'
                 ) % (result.pos_auth_code, result.pos_rrn))
+            elif state == 'cancelled' and result.timed_out:
+                self._post_chatter(move_id, _(
+                    'Card payment timed out on the terminal (card not presented in time) and AFS has '
+                    'no record of it — the card was not charged.'))
             elif state == 'cancelled':
                 self._post_chatter(move_id, _('Card payment cancelled on the terminal — the card was not charged.'))
             elif state == 'declined':
@@ -619,6 +629,7 @@ class AfsTransaction(models.Model):
                     return
 
             response_xml = transport_exc = None
+            not_processed = False
             try:
                 response_xml = client.post('Void', request_xml)
             except Exception as exc:  # noqa: BLE001 - recovered by reference below
@@ -630,6 +641,8 @@ class AfsTransaction(models.Model):
                 recovered = self._recover_by_reference(client, config, void_ref)
                 if recovered is not None:
                     response_xml = recovered
+            else:
+                response_xml, not_processed = _confirm_timeout(client, config, void_ref, response_xml)
 
             with registry.cursor() as cr:
                 env = api.Environment(cr, uid, context)
@@ -646,6 +659,7 @@ class AfsTransaction(models.Model):
                     }, late_reason=late_reason)
                     return
                 result = void_txn.terminal_id._parse_response(response_xml)
+                result.cancelled = result.cancelled or not_processed
                 outcome = afs_client.classify(result)
                 if transport_exc is not None:
                     _logger.info('AFS: Void %s recovered via EnquiryByRef after: %s', void_txn_id, transport_exc)
@@ -676,6 +690,10 @@ class AfsTransaction(models.Model):
                     'on a new linked transaction, but the original sale was NOT marked '
                     'reversed and the payment was NOT cancelled. Resolve manually.'
                 ) % (result.pos_auth_code, result.pos_rrn))
+            elif result.cancelled and result.timed_out:
+                self._post_chatter(move_id, _(
+                    'Card refund (Void) timed out on the terminal and AFS has no record of it — the '
+                    'card was not refunded. Run the Void again when the customer is at the terminal.'))
             elif result.cancelled:
                 self._post_chatter(move_id, _('Card refund (Void) cancelled on the terminal — the card was not refunded.'))
             elif wrote:
@@ -1006,6 +1024,29 @@ def _post_enquiry_by_ref(client, config, reference):
 def _afs_has_record(result):
     """Something came back for our reference at all (vs. AFS having no record of it)."""
     return bool(result.pos_rrn or result.pos_auth_code or result.pos_resp_code)
+
+
+def _confirm_timeout(client, config, reference, response_xml):
+    """AFS answered "Transaction Timeout" (the terminal gave up waiting for
+    the card). Normally nothing happened, but that is confirmed, not assumed:
+    ask AFS for this exact attempt by our reference first.
+
+    Returns (response_xml, not_processed): AFS's own record of the attempt
+    when it has one (recorded like any other answer); otherwise the timeout
+    answer, with not_processed=True only when AFS confirmed it has no record.
+    If the lookup fails, the timeout answer stays 'unknown' as before."""
+    try:
+        if not afs_client.parse_response(response_xml).timed_out:
+            return response_xml, False
+    except Exception:  # noqa: BLE001 - unparseable: left to the normal parsing
+        return response_xml, False
+    try:
+        raw = _post_enquiry_by_ref(client, config, reference)
+        found = _afs_has_record(afs_client.parse_response(raw))
+    except Exception:  # noqa: BLE001
+        _logger.exception('AFS: EnquiryByRef %s after a terminal timeout failed', reference)
+        return response_xml, False
+    return (raw, False) if found else (response_xml, True)
 
 
 def _outcome_unknown(exc):
